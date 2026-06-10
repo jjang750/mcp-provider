@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"python /tmp/qa_e2e.py\",\"description\":\"Run e2e from project root\"}",
-  "error": "Exit code 1\nTraceback (most recent call last):\r\n  File \"C:\\Users\\jjang\\AppData\\Local\\Temp\\qa_e2e.py\", line 4, in <module>\r\n    from backend.app import app\r\nModuleNotFoundError: No module named 'backend'",
-  "timestamp": "2026-06-10T13:46:26.980Z",
-  "retry_count": 2
-}

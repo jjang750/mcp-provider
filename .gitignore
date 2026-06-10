@@ -5,3 +5,12 @@ venv/
 .env
 .pytest_cache/
 *.egg-info/
+
+# Runtime SQLite DB (생성물 — 커밋 금지)
+*.db
+
+# OMC 로컬 도구 상태 (세션마다 변함)
+.omc/
+
+# 로컬 Claude 설정
+.claude/settings.local.json
