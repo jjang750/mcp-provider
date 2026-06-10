@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}MCP Provider{% endblock %}</title>
+
+  <!-- htmx -->
+  <script src="https://unpkg.com/htmx.org@1.9.12"
+          integrity="sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2"
+          crossorigin="anonymous"></script>
+
+  <!-- Drawflow (vanilla JS node editor) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/drawflow@0.0.59/dist/drawflow.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/drawflow@0.0.59/dist/drawflow.min.js"></script>
+
+  <link rel="stylesheet" href="/static/style.css" />
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <header class="app-header">
+    <a href="/" class="brand">MCP Provider</a>
+    <nav>
+      <a href="/">워크플로우</a>
+    </nav>
+  </header>
+
+  <main class="app-main">
+    {% block content %}{% endblock %}
+  </main>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

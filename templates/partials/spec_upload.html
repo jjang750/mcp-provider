@@ -1,0 +1,31 @@
+<!--
+  spec_upload.html
+  업로드는 SpecUploadResult(JSON) 를 반환하므로 htmx DOM swap 대신 JS fetch 로
+  처리하고, 반환된 operations 로 팔레트(#operations)를 다시 그린다.
+    POST /api/specs/upload     multipart/form-data, field "file"  -> SpecUploadResult
+    POST /api/specs/from-url   {url, name?}                       -> SpecUploadResult
+  SpecUploadResult = { spec: SpecSummary, operation_count, operations: OperationOut[], warnings[] }
+-->
+<div class="spec-upload">
+  <form id="spec-file-form" onsubmit="return uploadSpecFile(event)">
+    <label>파일 업로드 (.json / .yaml)
+      <input type="file" name="file" accept=".json,.yaml,.yml" required />
+    </label>
+    <button type="submit">업로드</button>
+  </form>
+
+  <div class="or-sep">또는</div>
+
+  <form id="spec-url-form" onsubmit="return uploadSpecUrl(event)">
+    <label>스펙 URL
+      <input type="url" name="url" placeholder="https://petstore.swagger.io/v2/swagger.json" required />
+    </label>
+    <label>이름 (선택)
+      <input type="text" name="name" placeholder="Petstore" />
+    </label>
+    <button type="submit">URL 로 가져오기</button>
+  </form>
+
+  <div id="spec-status" class="muted"></div>
+  <div id="spec-warnings" class="warn-msg"></div>
+</div>

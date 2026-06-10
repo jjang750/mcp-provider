@@ -1,0 +1,18 @@
+<!--
+  execution_log.html
+  실행 결과 표시 컨테이너. canvas.js(renderExecution)가 채운다.
+  ExecutionResult = {
+    execution_id, workflow_id, status: "running"|"success"|"failed",
+    started_at, finished_at, result, logs: NodeLog[]
+  }
+  NodeLog = { node_key, seq, status: "success"|"failed"|"skipped",
+              input, output, error, timestamp }
+  주의: 노드 실패도 HTTP 200 + status:"failed" 로 온다(§11-3). 오류 표시는
+  HTTP 상태가 아니라 ExecutionResult.status / NodeLog.error 로 판단한다.
+-->
+<div id="exec-summary" class="exec-summary muted">아직 실행하지 않았습니다.</div>
+<ol id="exec-logs" class="exec-logs"></ol>
+<details id="exec-result-wrap" hidden>
+  <summary>최종 결과 (result)</summary>
+  <pre id="exec-result" class="json-block"></pre>
+</details>

@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}워크플로우 목록 · MCP Provider{% endblock %}
+
+{% block content %}
+<section class="page index-page">
+  <div class="page-head">
+    <h1>워크플로우</h1>
+  </div>
+
+  <div class="card">
+    <h2>새 워크플로우 생성</h2>
+    <!--
+      POST /api/workflows (WorkflowCreateRequest {name, description?}) -> WorkflowDetail
+      WorkflowDetail.id 를 받아 에디터로 이동한다. 응답이 JSON 이므로 hx 로 직접
+      DOM swap 하지 않고 JS 핸들러에서 처리 후 redirect.
+    -->
+    <form id="create-form" onsubmit="return createWorkflow(event)">
+      <label>이름
+        <input type="text" name="name" required placeholder="Find Pet" />
+      </label>
+      <label>설명 (선택)
+        <input type="text" name="description" placeholder="Petstore 검색 워크플로우" />
+      </label>
+      <button type="submit">생성하고 편집</button>
+    </form>
+    <div id="create-error" class="error-msg" role="alert"></div>
+  </div>
+
+  <div class="card">
+    <h2>기존 워크플로우</h2>
+    <!-- GET /api/workflows -> list[WorkflowSummary] : JS 로 채운다 -->
+    <ul id="workflow-list" class="workflow-list">
+      <li class="muted">불러오는 중…</li>
+    </ul>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const API = "/api";
+
+async function loadWorkflows() {
+  const list = document.getElementById("workflow-list");
+  try {
+    const res = await fetch(`${API}/workflows`);
+    if (!res.ok) throw new Error(`목록 조회 실패 (${res.status})`);
+    const items = await res.json(); // list[WorkflowSummary]
+    if (!items.length) {
+      list.innerHTML = '<li class="muted">아직 워크플로우가 없습니다.</li>';
+      return;
+    }
+    list.innerHTML = items.map(wf => `
+      <li class="workflow-row">
+        <a class="wf-name" href="/editor/${wf.id}">${escapeHtml(wf.name)}</a>
+        <span class="wf-desc">${escapeHtml(wf.description || "")}</span>
+        <span class="wf-meta">
+          ${wf.mcp_exposed ? '<span class="badge">MCP</span>' : ''}
+          <span class="muted">${escapeHtml(wf.updated_at || "")}</span>
+        </span>
+        <button class="danger small" onclick="deleteWorkflow(${wf.id})">삭제</button>
+      </li>`).join("");
+  } catch (e) {
+    list.innerHTML = `<li class="error-msg">${escapeHtml(e.message)}</li>`;
+  }
+}
+
+async function createWorkflow(ev) {
+  ev.preventDefault();
+  const form = ev.target;
+  const err = document.getElementById("create-error");
+  err.textContent = "";
+  const body = {
+    name: form.name.value.trim(),
+    description: form.description.value.trim() || null,
+  };
+  try {
+    const res = await fetch(`${API}/workflows`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`생성 실패 (${res.status})`);
+    const wf = await res.json(); // WorkflowDetail
+    window.location.href = `/editor/${wf.id}`;
+  } catch (e) {
+    err.textContent = e.message;
+  }
+  return false;
+}
+
+async function deleteWorkflow(id) {
+  if (!confirm("이 워크플로우를 삭제할까요?")) return;
+  try {
+    const res = await fetch(`${API}/workflows/${id}`, { method: "DELETE" });
+    if (!res.ok) throw new Error(`삭제 실패 (${res.status})`);
+    loadWorkflows();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+
+loadWorkflows();
+</script>
+{% endblock %}

@@ -1,0 +1,23 @@
+# mcp-provider dependencies (Python 3.11)
+# Owned by backend-engineer (contract §9). Includes engine/MCP deps pre-emptively (§10).
+
+# --- Web framework / server ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+jinja2==3.1.5
+python-multipart==0.0.20          # multipart file upload (POST /api/specs/upload)
+pydantic==2.10.5
+
+# --- HTTP (URL fetch for /from-url + engine HTTP calls) ---
+httpx==0.28.1
+
+# --- OpenAPI parsing (engine/parser.py) ---
+PyYAML==6.0.2
+
+# --- data_mapping JSONPath subset (engine/executor.py) ---
+jsonpath-ng==1.7.0
+
+# --- MCP exposure (backend/mcp_server.py, §8) ---
+mcp==1.2.0
+
+# DB: standard-library sqlite3 (no dependency needed)

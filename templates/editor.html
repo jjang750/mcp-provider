@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}에디터 · MCP Provider{% endblock %}
+
+{% block head %}
+<!-- 백엔드가 워크플로우 id 를 주입한다. 라우트: GET /editor/{id} -> render(editor.html, workflow_id=id) -->
+<meta name="workflow-id" content="{{ workflow_id }}" />
+{% endblock %}
+
+{% block content %}
+<section class="editor-layout">
+
+  <!-- ===== 좌측: 스펙 업로드 + operation 팔레트 ===== -->
+  <aside class="panel panel-left">
+    <h2>1. 스펙</h2>
+    {% include "partials/spec_upload.html" %}
+
+    <h2>오퍼레이션</h2>
+    <p class="hint">노드를 캔버스로 끌어다 놓으세요.</p>
+    <div id="operations">
+      {% include "partials/operation_list.html" %}
+    </div>
+  </aside>
+
+  <!-- ===== 중앙: 캔버스 ===== -->
+  <div class="panel panel-center">
+    <div class="toolbar">
+      <strong id="wf-title">워크플로우 #{{ workflow_id }}</strong>
+      <span class="spacer"></span>
+      <button onclick="addStartNode()">+ start</button>
+      <button onclick="addEndNode()">+ end</button>
+      <button class="primary" onclick="saveWorkflow()">저장</button>
+      <button class="run" onclick="openRunDialog()">실행</button>
+      <span id="save-status" class="muted"></span>
+    </div>
+    <div id="drawflow" class="drawflow-canvas"></div>
+  </div>
+
+  <!-- ===== 우측: 노드 파라미터 / 엣지 매핑 / 실행 로그 ===== -->
+  <aside class="panel panel-right">
+    <div class="tabbar">
+      <button class="tab active" data-tab="params" onclick="switchTab('params')">속성</button>
+      <button class="tab" data-tab="log" onclick="switchTab('log')">실행 로그</button>
+    </div>
+
+    <div id="tab-params" class="tab-body">
+      <div id="node-params">
+        {% include "partials/node_params.html" %}
+      </div>
+    </div>
+
+    <div id="tab-log" class="tab-body" hidden>
+      <div id="execution-log">
+        {% include "partials/execution_log.html" %}
+      </div>
+    </div>
+  </aside>
+</section>
+
+<!-- 실행 입력 다이얼로그 -->
+<dialog id="run-dialog">
+  <form method="dialog" onsubmit="return runWorkflow(event)">
+    <h3>워크플로우 실행</h3>
+    <label>initial_input (JSON)
+      <textarea id="run-initial-input" rows="4">{}</textarea>
+    </label>
+    <label>auth (JSON, 예: {"token":"...", "api_key":"..."})
+      <textarea id="run-auth" rows="3">{}</textarea>
+    </label>
+    <div id="run-error" class="error-msg"></div>
+    <menu>
+      <button value="cancel" onclick="closeRunDialog()">취소</button>
+      <button value="run" class="primary">실행</button>
+    </menu>
+  </form>
+</dialog>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/canvas.js"></script>
+<script>
+  // editor 페이지 부트스트랩. canvas.js 가 전역 함수/객체를 정의한다.
+  const WORKFLOW_ID = parseInt(
+    document.querySelector('meta[name="workflow-id"]').content, 10
+  );
+  document.addEventListener("DOMContentLoaded", () => initEditor(WORKFLOW_ID));
+</script>
+{% endblock %}

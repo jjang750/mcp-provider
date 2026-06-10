@@ -1,0 +1,11 @@
+<!--
+  operation_list.html
+  업로드 후 JS(renderOperations)가 이 컨테이너 안쪽을 채운다.
+  각 항목은 draggable=true 이며 dataset 에 OperationOut 전체(JSON)를 담아
+  캔버스 drop 시 node.operation_id / params_schema 렌더에 사용한다.
+  OperationOut = {id, spec_id, operation_id, method, path, base_url, summary,
+                  params_schema, request_schema, response_schema, auth}
+-->
+<ul id="operation-palette" class="operation-palette">
+  <li class="muted">스펙을 업로드하면 오퍼레이션이 여기 표시됩니다.</li>
+</ul>
