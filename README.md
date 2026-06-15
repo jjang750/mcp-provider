@@ -48,7 +48,7 @@ mcp-provider/
 
 ```powershell
 # Windows PowerShell 기준
-cd C:\Users\jjang\workspace\mcp-provider
+cd ~\workspace\mcp-provider
 
 # 가상환경
 python -m venv venv
