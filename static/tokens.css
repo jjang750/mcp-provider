@@ -1,0 +1,59 @@
+/* MCP Provider — design tokens (light default + dark via [data-theme="dark"])
+   Source: design handoff (디자인 시스템). Plain CSS variables, no build tools. */
+:root{
+  /* surfaces */
+  --canvas:#F4F6F9; --canvas-dots:#D5DAE2;
+  --surface:#FFFFFF; --surface-2:#F7F9FB; --surface-3:#EEF1F5;
+  --border:#E6EAEF; --border-strong:#D5DAE2;
+  /* text */
+  --text-1:#1A2231; --text-2:#5C6675; --text-3:#8A94A6;
+  /* brand + semantic */
+  --brand:#0E9E74; --brand-hover:#0B8A65; --brand-weak:#E3F7EE; --brand-text:#0E8A5F;
+  --brand-solid:#0A7D5A;            /* AA-safe button fill (white text) */
+  --success:#16A34A; --success-weak:#E3F7EE;
+  --danger:#E5484D;  --danger-weak:#FDE8E8;
+  --warn:#B7791F;    --warn-weak:#FFF3DD;
+  --skip:#98A2B3;    --skip-weak:#EEF1F5;
+  --focus:rgba(14,158,116,.40);
+  /* method badges */
+  --m-get:#1D6FE0;    --m-get-bg:#E5F0FF;
+  --m-post:#0E8A5F;   --m-post-bg:#E3F7EE;
+  --m-put:#B7791F;    --m-put-bg:#FFF3DD;
+  --m-patch:#6D45D6;  --m-patch-bg:#F0EBFF;
+  --m-delete:#D03939; --m-delete-bg:#FDE8E8;
+  /* control-flow (logic) nodes */
+  --logic-branch:#7C5CFF; --logic-branch-bg:#F0EBFF; --logic-branch-text:#6D45D6;
+  --logic-loop:#E8883B;   --logic-loop-bg:#FDF0E3;   --logic-loop-text:#B7791F;
+  --logic-merge:#3B82F6;  --logic-merge-bg:#E8F1FE;  --logic-merge-text:#1D6FE0;
+  /* type + shape */
+  --font-ui:'Plus Jakarta Sans',system-ui,-apple-system,"Malgun Gothic",sans-serif;
+  --font-mono:'JetBrains Mono',ui-monospace,Consolas,monospace;
+  --r-sm:6px; --r-md:8px; --r-lg:12px; --r-xl:16px; --r-pill:999px;
+  --sh-1:0 1px 2px rgba(16,24,40,.06);
+  --sh-2:0 2px 8px rgba(16,24,40,.08);
+  --sh-3:0 8px 24px -6px rgba(16,24,40,.16);
+}
+[data-theme="dark"]{
+  --canvas:#0C0F16; --canvas-dots:#1E2533;
+  --surface:#151A23; --surface-2:#1A2029; --surface-3:#222A36;
+  --border:#262E3B; --border-strong:#313B4A;
+  --text-1:#EAEDF3; --text-2:#8A94A6; --text-3:#5B6577;
+  --brand:#2DD4A7; --brand-hover:#34E0B3; --brand-weak:rgba(45,212,167,.14); --brand-text:#2DD4A7;
+  --brand-solid:#0E9E74;
+  --success:#34D399; --success-weak:rgba(52,211,153,.14);
+  --danger:#FB6F84;  --danger-weak:rgba(251,111,132,.14);
+  --warn:#FBBF24;    --warn-weak:rgba(251,191,36,.14);
+  --skip:#5B6577;    --skip-weak:#222A36;
+  --focus:rgba(45,212,167,.45);
+  --m-get:#4DA3FF;    --m-get-bg:rgba(77,163,255,.14);
+  --m-post:#34D399;   --m-post-bg:rgba(52,211,153,.14);
+  --m-put:#FBBF24;    --m-put-bg:rgba(251,191,36,.16);
+  --m-patch:#B69CFF;  --m-patch-bg:rgba(182,156,255,.16);
+  --m-delete:#FB6F84; --m-delete-bg:rgba(251,111,132,.16);
+  --logic-branch:#B69CFF; --logic-branch-bg:rgba(182,156,255,.16); --logic-branch-text:#B69CFF;
+  --logic-loop:#FBBF24;   --logic-loop-bg:rgba(251,191,36,.16);    --logic-loop-text:#FBBF24;
+  --logic-merge:#4DA3FF;  --logic-merge-bg:rgba(77,163,255,.14);   --logic-merge-text:#4DA3FF;
+  --sh-1:0 1px 2px rgba(0,0,0,.4);
+  --sh-2:0 4px 14px rgba(0,0,0,.45);
+  --sh-3:0 8px 28px rgba(0,0,0,.55);
+}

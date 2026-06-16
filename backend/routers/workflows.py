@@ -1,7 +1,10 @@
 """/api/workflows* endpoints incl. /run (contract §5.1 / §5.2 / §6)."""
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from .. import engine_bridge
 from ..db import get_db
@@ -68,6 +71,44 @@ def delete_workflow(wf_id: int, conn=Depends(get_db)) -> dict:
     if not wf_repo.delete_workflow(conn, wf_id):
         raise HTTPException(status_code=404, detail=f"Workflow {wf_id} not found.")
     return {"deleted": True}
+
+
+class ExposeRequest(BaseModel):
+    exposed: bool = True
+    # Optional MCP server group used to split tools across separate MCP servers
+    # (e.g. "xperp", "xpvote"). None/"" leaves the workflow in the default server.
+    group: Optional[str] = None
+    # Optional explicit MCP tool name (e.g. "xperp_charge_detail"). None = no
+    # change; "" clears the override (auto name). Sanitized at the MCP server.
+    tool_name: Optional[str] = None
+
+
+@router.put("/{wf_id}/expose")
+def set_expose(
+    wf_id: int, body: ExposeRequest, conn=Depends(get_db)
+) -> dict:
+    """Toggle MCP exposure and (optionally) the MCP server group.
+
+    ``group`` lets a single workflow set be split across multiple MCP servers:
+    each server process filters by ``MCP_GROUP`` (see backend/mcp_server.py).
+
+    Note: the MCP server reads exposed workflows at startup, so the MCP client
+    (e.g. Claude Desktop) must be restarted to pick up the change.
+    """
+    if wf_repo.get_workflow_row(conn, wf_id) is None:
+        raise HTTPException(status_code=404, detail=f"Workflow {wf_id} not found.")
+    wf_repo.set_mcp_exposed(conn, wf_id, body.exposed)
+    if body.group is not None:
+        wf_repo.set_mcp_group(conn, wf_id, body.group)
+    if body.tool_name is not None:
+        wf_repo.set_mcp_tool_name(conn, wf_id, body.tool_name)
+    detail = wf_repo.get_workflow_detail(conn, wf_id)
+    return {
+        "id": wf_id,
+        "mcp_exposed": detail.mcp_exposed,
+        "mcp_group": detail.mcp_group,
+        "mcp_tool_name": detail.mcp_tool_name,
+    }
 
 
 @router.post("/{wf_id}/run", response_model=ExecutionResult)

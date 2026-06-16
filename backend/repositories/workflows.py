@@ -28,6 +28,8 @@ def _row_to_summary(r: sqlite3.Row) -> WorkflowSummary:
         name=r["name"],
         description=r["description"],
         mcp_exposed=bool(r["mcp_exposed"]),
+        mcp_group=(r["mcp_group"] if "mcp_group" in r.keys() else None),
+        mcp_tool_name=(r["mcp_tool_name"] if "mcp_tool_name" in r.keys() else None),
         created_at=r["created_at"],
         updated_at=r["updated_at"],
     )
@@ -72,6 +74,28 @@ def set_mcp_exposed(conn: sqlite3.Connection, wf_id: int, exposed: bool) -> bool
     return cur.rowcount > 0
 
 
+def set_mcp_group(conn: sqlite3.Connection, wf_id: int, group: Optional[str]) -> bool:
+    """Set/clear the MCP server group used to split workflows across servers."""
+    normalized = (group or "").strip() or None
+    cur = conn.execute(
+        "UPDATE workflows SET mcp_group = ?, updated_at = ? WHERE id = ?",
+        (normalized, utc_now(), wf_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def set_mcp_tool_name(conn: sqlite3.Connection, wf_id: int, tool_name: Optional[str]) -> bool:
+    """Set/clear the explicit MCP tool name override (empty -> NULL = auto name)."""
+    normalized = (tool_name or "").strip() or None
+    cur = conn.execute(
+        "UPDATE workflows SET mcp_tool_name = ?, updated_at = ? WHERE id = ?",
+        (normalized, utc_now(), wf_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
 def _touch_workflow_meta(
     conn: sqlite3.Connection,
     wf_id: int,
@@ -109,6 +133,7 @@ def _load_nodes(conn: sqlite3.Connection, wf_id: int) -> list[Node]:
                 type=r["type"],
                 label=r["label"],
                 operation_id=r["operation_id"],
+                base_url=(r["base_url"] if "base_url" in r.keys() else None),
                 params=NodeParams(
                     path=params_raw.get("path", {}) or {},
                     query=params_raw.get("query", {}) or {},
@@ -154,6 +179,8 @@ def get_workflow_detail(
         name=r["name"],
         description=r["description"],
         mcp_exposed=bool(r["mcp_exposed"]),
+        mcp_group=(r["mcp_group"] if "mcp_group" in r.keys() else None),
+        mcp_tool_name=(r["mcp_tool_name"] if "mcp_tool_name" in r.keys() else None),
         created_at=r["created_at"],
         updated_at=r["updated_at"],
         nodes=_load_nodes(conn, wf_id),
@@ -202,8 +229,8 @@ def replace_graph(
             conn.execute(
                 """
                 INSERT INTO nodes (workflow_id, node_key, operation_id, type,
-                                   label, params, position_x, position_y)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                   label, base_url, params, position_x, position_y)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     wf_id,
@@ -211,6 +238,7 @@ def replace_graph(
                     n.operation_id,
                     n.type,
                     n.label,
+                    (n.base_url or None),
                     dumps(params_obj),
                     n.position.x,
                     n.position.y,

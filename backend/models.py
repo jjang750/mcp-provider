@@ -37,6 +37,11 @@ class Node(BaseModel):
     type: NodeType
     label: str = ""
     operation_id: Optional[int] = None
+    # Per-node base URL override. When set, takes precedence over the
+    # operation's base_url at execution time so a single workflow can call
+    # multiple different API hosts. Falls back to the operation base_url, then
+    # the engine default (§ executor) when empty.
+    base_url: Optional[str] = None
     params: NodeParams = Field(default_factory=NodeParams)
     position: Position = Field(default_factory=Position)
 
@@ -114,6 +119,8 @@ class WorkflowSummary(BaseModel):
     name: str
     description: Optional[str] = None
     mcp_exposed: bool
+    mcp_group: Optional[str] = None
+    mcp_tool_name: Optional[str] = None
     created_at: str
     updated_at: str
 
@@ -128,6 +135,8 @@ class WorkflowDetail(BaseModel):
     name: str
     description: Optional[str] = None
     mcp_exposed: bool
+    mcp_group: Optional[str] = None
+    mcp_tool_name: Optional[str] = None
     created_at: str
     updated_at: str
     nodes: list[Node] = Field(default_factory=list)

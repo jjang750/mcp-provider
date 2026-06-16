@@ -21,6 +21,10 @@
 
 const API = "/api";
 
+// 노드/오퍼레이션에 base_url 미설정 시 서버가 사용하는 기본값.
+// (서버 측 MCP_DEFAULT_BASE_URL 과 동일하게 유지 — 플레이스홀더 표시용)
+const DEFAULT_BASE_URL = "http://localhost:8000";
+
 let editor = null;          // Drawflow 인스턴스
 let currentWorkflowId = null;
 let selectedNodeId = null;  // Drawflow 숫자 id
@@ -29,6 +33,10 @@ let nodeSeq = 0;            // node_key 발급용 카운터
 let edgeSeq = 0;            // edge_key 발급용 카운터
 // Drawflow 숫자 노드 id -> 계약 node_key("node_N") 매핑 보존
 const edgeMappings = {};    // "df_src->df_tgt" -> [ {from,to} ]
+const runFormCache = {};    // 실행 폼 마지막 입력값 보존(세션): {authToken, authType}
+let runMode = "form";       // 실행 다이얼로그 모드: "form" | "json"
+let runAuthType = "bearer"; // 인증 타입: "bearer" | "apikey"
+let selectedNodes = new Set(); // 다중 선택된 Drawflow id(문자열) — 맞춤/분배용
 
 // ---- operation 메타 캐시 (by OperationOut.id) --------------------------------
 // 스펙 업로드 응답의 operations[] 로 즉시 채우고, 저장된 워크플로우 재진입 시에는
@@ -63,10 +71,18 @@ async function ensureOperation(operationId) {
 /* ------------------------------------------------------------------ init -- */
 function initEditor(workflowId) {
   currentWorkflowId = workflowId;
+  syncThemeIcon();
   const container = document.getElementById("drawflow");
   editor = new Drawflow(container);
   editor.reroute = true;
   editor.start();
+
+  // 줌 배율 표시 갱신
+  editor.on("zoom", updateZoomLabel);
+  updateZoomLabel();
+
+  // 다중 선택(맞춤/분배용) — 클릭 위임, shift로 누적
+  container.addEventListener("click", onCanvasClickSelect);
 
   // 캔버스 드롭 핸들링 (팔레트에서 operation 드래그)
   container.addEventListener("dragover", (e) => e.preventDefault());
@@ -131,8 +147,238 @@ function connKey(src, tgt) { return `${src}->${tgt}`; }
 function makeNodeKey() { return `node_${nodeSeq++}`; }
 
 function nodeHtml(label, sub) {
-  return `<div class="df-node"><div class="df-node-title">${escapeHtml(label)}</div>` +
-         (sub ? `<div class="df-node-sub">${escapeHtml(sub)}</div>` : "") + `</div>`;
+  // api 노드 라벨은 "METHOD /path" 형식 → 상단 상태바 + 메서드 배지 + 경로 + 제목(요약).
+  const m = /^(GET|POST|PUT|PATCH|DELETE)\s+(.*)$/i.exec(label || "");
+  if (m) {
+    const method = m[1].toUpperCase();
+    const title = sub || m[2];          // 요약 없으면 경로로 폴백
+    return `<div class="wf-node" data-status="">
+      <div class="wf-node__stripe"></div>
+      <div class="wf-node__body">
+        <div class="wf-node__head">
+          <span class="wf-badge wf-badge--${method.toLowerCase()}">${escapeHtml(method)}</span>
+          <span class="wf-path">${escapeHtml(m[2])}</span>
+          <span class="wf-node__status"></span>
+        </div>
+        <div class="wf-node__title">${escapeHtml(title)}</div>
+      </div>
+    </div>`;
+  }
+  // start / end → 아이콘 타일 + 라벨
+  if (label === "start" || label === "end") {
+    const isStart = label === "start";
+    const ico = isStart
+      ? '<svg width="11" height="11" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 1 L9 5 L2 9 Z" fill="#fff"/></svg>'
+      : '<svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true"><rect x="1.5" y="1.5" width="7" height="7" rx="1.5" fill="#fff"/></svg>';
+    return `<div class="wf-node wf-node--terminal wf-node--${isStart ? "start" : "end"}">
+      <span class="wf-ico">${ico}</span>
+      <span class="wf-label">${isStart ? "시작" : "종료"}</span>
+    </div>`;
+  }
+  return `<div class="wf-node"><div class="wf-node__body">
+    <div class="wf-node__title">${escapeHtml(label)}</div></div></div>`;
+}
+
+/* ----- 줌 컨트롤 ----- */
+function updateZoomLabel() {
+  const el = document.getElementById("zoom-label");
+  if (el && editor) el.textContent = Math.round((editor.zoom || 1) * 100) + "%";
+}
+function zoomIn() { if (editor) { editor.zoom_in(); updateZoomLabel(); } }
+function zoomOut() { if (editor) { editor.zoom_out(); updateZoomLabel(); } }
+function zoomReset() { if (editor) { editor.zoom_reset(); updateZoomLabel(); } }
+
+/* ----- 노드 위치 적용 (애니메이션) ----- */
+function applyPos(id, x, y) {
+  const home = editor.drawflow.drawflow.Home.data;
+  if (!home[id]) return;
+  const el = document.getElementById("node-" + id);
+  if (el) {
+    el.classList.add("lay-anim");
+    el.style.left = x + "px";
+    el.style.top = y + "px";
+    setTimeout(() => el.classList.remove("lay-anim"), 260);
+  }
+  home[id].pos_x = x;
+  home[id].pos_y = y;
+  editor.updateConnectionNodes("node-" + id);
+}
+
+/* ----- 다중 선택 (맞춤/분배용) ----- */
+function refreshMultiSel() {
+  document.querySelectorAll(".drawflow .drawflow-node").forEach(n =>
+    n.classList.toggle("multi-selected", selectedNodes.has(n.id.replace("node-", ""))));
+  const n = selectedNodes.size;
+  const countEl = document.getElementById("sel-count");
+  if (countEl) {
+    countEl.textContent = n >= 2 ? `${n}개 선택` : "";
+    countEl.style.display = n >= 2 ? "" : "none";
+  }
+  document.querySelectorAll(".canvas-toolbar [data-needsel]").forEach(b => {
+    b.disabled = n < 2;
+  });
+}
+
+function onCanvasClickSelect(e) {
+  const nodeEl = e.target.closest(".drawflow-node");
+  if (!nodeEl) { selectedNodes.clear(); refreshMultiSel(); return; }
+  const id = nodeEl.id.replace("node-", "");
+  if (e.shiftKey) {
+    selectedNodes.has(id) ? selectedNodes.delete(id) : selectedNodes.add(id);
+  } else {
+    selectedNodes = new Set([id]);
+  }
+  refreshMultiSel();
+}
+
+// 선택 노드들 크기/위치 수집.
+function selectedRects() {
+  const home = editor.drawflow.drawflow.Home.data;
+  const rects = [];
+  selectedNodes.forEach(id => {
+    if (!home[id]) return;
+    const el = document.getElementById("node-" + id);
+    rects.push({
+      id,
+      x: home[id].pos_x, y: home[id].pos_y,
+      w: el ? el.offsetWidth : 180, h: el ? el.offsetHeight : 60,
+    });
+  });
+  return rects;
+}
+
+// 맞춤 정렬: top/bottom/left/right/centerx(수직 중앙선)/centery(수평 중앙선)
+function alignNodes(mode) {
+  const r = selectedRects();
+  if (r.length < 2) return;
+  const minX = Math.min(...r.map(n => n.x));
+  const maxR = Math.max(...r.map(n => n.x + n.w));
+  const minY = Math.min(...r.map(n => n.y));
+  const maxB = Math.max(...r.map(n => n.y + n.h));
+  const cx = (minX + maxR) / 2, cy = (minY + maxB) / 2;
+  r.forEach(n => {
+    let x = n.x, y = n.y;
+    if (mode === "left") x = minX;
+    else if (mode === "right") x = maxR - n.w;
+    else if (mode === "centerx") x = cx - n.w / 2;
+    else if (mode === "top") y = minY;
+    else if (mode === "bottom") y = maxB - n.h;
+    else if (mode === "centery") y = cy - n.h / 2;
+    applyPos(n.id, Math.round(x), Math.round(y));
+  });
+  setSaveStatus("맞춤 정렬됨 (저장 필요)", false);
+}
+
+// 균등 분배: 축(x|y)으로 사이 간격을 균등하게.
+function distributeNodes(axis) {
+  const r = selectedRects();
+  if (r.length < 3) { setSaveStatus("균등 분배는 3개 이상 선택", true); return; }
+  const key = axis === "y" ? "y" : "x";
+  const sizeKey = axis === "y" ? "h" : "w";
+  r.sort((a, b) => a[key] - b[key]);
+  const first = r[0], last = r[r.length - 1];
+  const span = (last[key] + last[sizeKey]) - first[key];
+  const totalW = r.reduce((s, n) => s + n[sizeKey], 0);
+  const gap = (span - totalW) / (r.length - 1);
+  let cursor = first[key];
+  r.forEach(n => {
+    const pos = Math.round(cursor);
+    if (axis === "y") applyPos(n.id, n.x, pos); else applyPos(n.id, pos, n.y);
+    cursor += n[sizeKey] + gap;
+  });
+  setSaveStatus("균등 분배됨 (저장 필요)", false);
+}
+
+/* ----- 자동 정렬 (좌→우 레이어드) ----- */
+function autoLayout() {
+  if (!editor) return;
+  const home = editor.drawflow.drawflow.Home.data;   // live data
+  const ids = Object.keys(home);
+  if (!ids.length) return;
+
+  const adj = {}, indeg = {};
+  ids.forEach(id => { adj[id] = []; indeg[id] = 0; });
+  ids.forEach(id => {
+    const outs = home[id].outputs || {};
+    for (const o in outs) for (const c of (outs[o].connections || [])) {
+      const t = String(c.node);
+      if (adj[id] && indeg[t] != null) { adj[id].push(t); indeg[t]++; }
+    }
+  });
+
+  // longest-path layering (Kahn). roots(indeg 0) = layer 0.
+  const layer = {}, deg = {};
+  ids.forEach(id => { deg[id] = indeg[id]; });
+  const queue = ids.filter(id => indeg[id] === 0);
+  queue.forEach(id => { layer[id] = 0; });
+  let qi = 0;
+  while (qi < queue.length) {
+    const u = queue[qi++];
+    for (const v of adj[u]) {
+      layer[v] = Math.max(layer[v] || 0, (layer[u] || 0) + 1);
+      if (--deg[v] === 0) queue.push(v);
+    }
+  }
+  ids.forEach(id => { if (layer[id] == null) layer[id] = 0; }); // cycle fallback
+
+  const byLayer = {};
+  ids.forEach(id => { (byLayer[layer[id]] = byLayer[layer[id]] || []).push(id); });
+
+  const COLX = 300, ROWY = 150, X0 = 60, Y0 = 60;
+  Object.keys(byLayer).sort((a, b) => a - b).forEach(L => {
+    byLayer[L].forEach((id, i) => {
+      applyPos(id, X0 + (+L) * COLX, Y0 + i * ROWY);
+    });
+  });
+  setSaveStatus("자동 정렬됨 (저장 필요)", false);
+}
+
+/* ----- 테마 토글 ----- */
+function syncThemeIcon() {
+  const b = document.getElementById("theme-toggle");
+  if (b) b.textContent =
+    document.documentElement.getAttribute("data-theme") === "dark" ? "🌙" : "🌗";
+}
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+  const next = cur === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  try { localStorage.setItem("mcp-theme", next); } catch (e) { /* noop */ }
+  syncThemeIcon();
+}
+
+// 실행 결과의 노드 상태를 캔버스 노드 색으로 반영.
+function applyNodeStatuses(logs) {
+  // 초기화
+  document.querySelectorAll(".drawflow .wf-node").forEach(wf => {
+    wf.setAttribute("data-status", "");
+    const s = wf.querySelector(".wf-node__status");
+    if (s) { s.textContent = ""; s.className = "wf-node__status"; }
+  });
+  let home;
+  try { home = editor.drawflow.drawflow.Home.data; } catch (e) { return; }
+  const keyToDf = {};
+  for (const id in home) {
+    const k = home[id].data && home[id].data.node_key;
+    if (k) keyToDf[k] = id;
+  }
+  const statusAttr = { success: "success", failed: "error", skipped: "skipped" };
+  const mark = { success: "✓", failed: "!", skipped: "스킵" };
+  for (const l of (logs || [])) {
+    const dfId = keyToDf[l.node_key];
+    if (!dfId) continue;
+    const el = document.getElementById("node-" + dfId);
+    if (!el) continue;
+    const wf = el.querySelector(".wf-node");
+    if (!wf) continue;
+    wf.setAttribute("data-status", statusAttr[l.status] || "");
+    const s = wf.querySelector(".wf-node__status");
+    if (s) {
+      s.textContent = mark[l.status] || "";
+      if (l.status === "success") s.classList.add("wf-node__status--success");
+      else if (l.status === "failed") s.classList.add("wf-node__status--error");
+    }
+  }
 }
 
 function addApiNode(operation, posX, posY) {
@@ -143,6 +389,7 @@ function addApiNode(operation, posX, posY) {
     ctype: "api_call",
     label: label,
     operation_id: operation.id,            // OperationOut.id (= operations.id DB PK)
+    base_url: null,                        // 노드별 base_url 오버라이드(빈 값=오퍼레이션/기본값 사용)
     params: { path: {}, query: {}, header: {}, body: null },
     operation: operation,                  // 폼 렌더용 원본(직렬화 제외)
   };
@@ -212,6 +459,7 @@ function toContractGraph(drawflowExport) {
       type: d.ctype || "api_call",
       label: d.label || "",
       operation_id: (d.operation_id === undefined ? null : d.operation_id),
+      base_url: (d.base_url ? d.base_url : null),
       params: {
         path:   p.path   || {},
         query:  p.query  || {},
@@ -277,6 +525,7 @@ function fromContractGraph(graph) {
       ctype: ctype,
       label: node.label || "",
       operation_id: (node.operation_id === undefined ? null : node.operation_id),
+      base_url: (node.base_url ? node.base_url : null),
       params: {
         path:   (node.params && node.params.path)   || {},
         query:  (node.params && node.params.query)  || {},
@@ -329,9 +578,101 @@ async function loadWorkflow(id) {
   try {
     const res = await fetch(`${API}/workflows/${id}`);
     if (!res.ok) throw new Error(`워크플로우 로드 실패 (${res.status})`);
-    const wf = await res.json(); // WorkflowDetail {id,name,description,...,nodes,edges}
+    const wf = await res.json(); // WorkflowDetail {id,name,description,mcp_exposed,...,nodes,edges}
     document.getElementById("wf-title").textContent = wf.name || `워크플로우 #${id}`;
+    setExposeBtn(!!wf.mcp_exposed);
+    const gi = document.getElementById("mcp-group");
+    if (gi) gi.value = wf.mcp_group || "";
+    const ti = document.getElementById("mcp-tool-name");
+    if (ti) ti.value = wf.mcp_tool_name || "";
     fromContractGraph({ nodes: wf.nodes || [], edges: wf.edges || [] });
+    refreshNodeTitles();   // 오퍼레이션 요약을 노드 제목에 반영(경로 중복 방지)
+  } catch (e) {
+    setSaveStatus(e.message, true);
+  }
+}
+
+// 로드된 api 노드의 제목을 오퍼레이션 요약으로 갱신(요약 없으면 경로 유지).
+async function refreshNodeTitles() {
+  const home = editor.drawflow.drawflow.Home.data;
+  for (const id in home) {
+    const d = home[id].data || {};
+    if (d.ctype !== "api_call" || d.operation_id == null) continue;
+    const op = await ensureOperation(d.operation_id);
+    if (!op) continue;
+    d.operation = op;  // 속성 패널용 캐시
+    if (!op.summary) continue;
+    const el = document.getElementById("node-" + id);
+    const t = el && el.querySelector(".wf-node__title");
+    if (t) t.textContent = op.summary;
+  }
+}
+
+let currentExposed = false;
+function setExposeBtn(exposed) {
+  currentExposed = !!exposed;
+  const btn = document.getElementById("expose-btn");
+  if (!btn) return;
+  btn.textContent = "노출: " + (currentExposed ? "ON" : "OFF");
+  btn.classList.toggle("primary", currentExposed);
+}
+
+// 도구 이름 입력 변경 시 노출 상태 유지한 채 이름만 저장.
+async function applyToolName() {
+  const el = document.getElementById("mcp-tool-name");
+  const toolName = el ? (el.value || "").trim() : "";
+  try {
+    const res = await fetch(`${API}/workflows/${currentWorkflowId}/expose`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ exposed: currentExposed, tool_name: toolName }),
+    });
+    if (!res.ok) throw new Error(`도구 이름 저장 실패 (${res.status})`);
+    const r = await res.json();
+    if (el) el.value = r.mcp_tool_name || "";
+    setSaveStatus(`도구 이름=${r.mcp_tool_name || "(자동)"} 저장됨 (Claude Desktop 재시작 필요)`, false);
+  } catch (e) {
+    setSaveStatus(e.message, true);
+  }
+}
+
+// 그룹 입력 변경 시 노출 상태는 유지한 채 그룹만 저장.
+async function applyMcpGroup() {
+  const groupEl = document.getElementById("mcp-group");
+  const group = groupEl ? (groupEl.value || "").trim() : "";
+  try {
+    const res = await fetch(`${API}/workflows/${currentWorkflowId}/expose`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ exposed: currentExposed, group: group }),
+    });
+    if (!res.ok) throw new Error(`그룹 저장 실패 (${res.status})`);
+    const r = await res.json();
+    if (groupEl) groupEl.value = r.mcp_group || "";
+    setSaveStatus(`그룹=${r.mcp_group || "(기본)"} 저장됨 (Claude Desktop 재시작 필요)`, false);
+  } catch (e) {
+    setSaveStatus(e.message, true);
+  }
+}
+
+// MCP 노출 토글. 변경 후에는 MCP 클라이언트(예: Claude Desktop) 재시작 필요.
+async function toggleExpose() {
+  const next = !currentExposed;
+  const groupEl = document.getElementById("mcp-group");
+  const group = groupEl ? (groupEl.value || "").trim() : "";
+  try {
+    const res = await fetch(`${API}/workflows/${currentWorkflowId}/expose`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ exposed: next, group: group }),
+    });
+    if (!res.ok) throw new Error(`노출 변경 실패 (${res.status})`);
+    const r = await res.json();
+    setExposeBtn(!!r.mcp_exposed);
+    if (groupEl) groupEl.value = r.mcp_group || "";
+    setSaveStatus(next
+      ? `MCP 노출됨 ✓ 그룹=${r.mcp_group || "(기본)"} (Claude Desktop 재시작 필요)`
+      : "MCP 노출 해제됨", false);
   } catch (e) {
     setSaveStatus(e.message, true);
   }
@@ -362,12 +703,188 @@ function setSaveStatus(msg, isErr) {
 }
 
 /* ----- 실행 ----- */
-function openRunDialog() {
+async function openRunDialog() {
   document.getElementById("run-error").textContent = "";
+  setRunModeUI("form");
+  setAuthType(runFormCache.authType || "bearer");
+  document.getElementById("run-auth-token").value = runFormCache.authToken || "";
+  await buildRunForm();
+  updateRunSubtitle();
   document.getElementById("run-dialog").showModal();
 }
 function closeRunDialog() {
   document.getElementById("run-dialog").close();
+}
+
+// 다이얼로그 서브타이틀: 연결된 API 노드 수.
+function updateRunSubtitle() {
+  const el = document.getElementById("run-sub");
+  if (!el) return;
+  const n = startConnectedApiNodeIds().length;
+  el.textContent = n ? `API 노드 ${n}개` : "연결된 API 노드 없음";
+}
+
+// 인증 타입 세그먼트 선택.
+function setAuthType(type) {
+  runAuthType = (type === "apikey") ? "apikey" : "bearer";
+  document.querySelectorAll("#run-auth-seg .seg-btn").forEach(b =>
+    b.classList.toggle("active", b.dataset.auth === runAuthType));
+}
+
+// 모드 UI만 전환(값 동기화 없음).
+function setRunModeUI(mode) {
+  runMode = (mode === "json") ? "json" : "form";
+  document.getElementById("run-form-mode").hidden = runMode !== "form";
+  document.getElementById("run-json-mode").hidden = runMode !== "json";
+  document.querySelectorAll("#run-mode-seg .seg-btn").forEach(b =>
+    b.classList.toggle("active", b.dataset.mode === runMode));
+}
+
+// 시작 노드에 직접 연결된 api_call 노드들의 Drawflow id 목록.
+function startConnectedApiNodeIds() {
+  const home = editor.export().drawflow.Home.data;
+  let startDf = null;
+  for (const id in home) {
+    if (home[id].data && home[id].data.ctype === "start") { startDf = id; break; }
+  }
+  if (startDf == null) return [];
+  const targets = [];
+  const outs = home[startDf].outputs || {};
+  for (const o in outs) {
+    for (const c of (outs[o].connections || [])) {
+      const t = String(c.node);
+      if (home[t] && home[t].data && home[t].data.ctype === "api_call") targets.push(t);
+    }
+  }
+  return targets;
+}
+
+// to 경로 형식: params.<path|query|header>.<name> | params.body | params.body.<key>
+function getNodeParamByPath(d, toPath) {
+  const parts = String(toPath).split(".");
+  const p = d.params || {};
+  if (parts.length === 3 && ["path", "query", "header"].includes(parts[1]))
+    return (p[parts[1]] || {})[parts[2]];
+  if (parts.length === 2 && parts[1] === "body") return p.body;
+  if (parts.length >= 3 && parts[1] === "body") {
+    const b = p.body;
+    return (b && typeof b === "object") ? b[parts.slice(2).join(".")] : undefined;
+  }
+  return undefined;
+}
+
+function setNodeParamByPath(d, toPath, value) {
+  if (!d.params) d.params = { path: {}, query: {}, header: {}, body: null };
+  const parts = String(toPath).split(".");
+  if (parts.length === 3 && ["path", "query", "header"].includes(parts[1])) {
+    const loc = parts[1], name = parts[2];
+    if (!d.params[loc] || typeof d.params[loc] !== "object") d.params[loc] = {};
+    if (value === undefined) delete d.params[loc][name]; else d.params[loc][name] = value;
+    return;
+  }
+  if (parts.length === 2 && parts[1] === "body") {
+    d.params.body = (value === undefined ? null : value); return;
+  }
+  if (parts.length >= 3 && parts[1] === "body") {
+    const key = parts.slice(2).join(".");
+    if (!d.params.body || typeof d.params.body !== "object") d.params.body = {};
+    if (value === undefined) delete d.params.body[key]; else d.params.body[key] = value;
+  }
+}
+
+function paramDisplay(v) {
+  if (v == null) return "";
+  return (typeof v === "string") ? v : JSON.stringify(v);
+}
+
+// 폼 렌더: 시작 노드에 직접 연결된 API 노드들의 파라미터를 노드별로 표시(현재값 prefill).
+async function buildRunForm() {
+  const wrap = document.getElementById("run-form-fields");
+  const dfIds = startConnectedApiNodeIds();
+  if (!dfIds.length) {
+    wrap.innerHTML = '<p class="muted">시작 노드에 직접 연결된 API 노드가 없습니다. ' +
+      'API 노드를 시작 노드에 연결하거나 "JSON 직접 편집"으로 입력하세요.</p>';
+    return;
+  }
+  let html = "";
+  for (const dfId of dfIds) {
+    const node = editor.getNodeFromId(dfId);
+    const d = (node && node.data) || {};
+    const op = await ensureOperation(d.operation_id);
+    const fields = paramInputPaths(op);  // [{path,label,loc,type,required}]
+    const title = escapeHtml(d.label || ("node " + dfId));
+    if (!fields.length) {
+      html += `<fieldset><legend>${title}</legend>
+        <p class="muted">입력 파라미터가 없습니다.</p></fieldset>`;
+      continue;
+    }
+    html += `<fieldset><legend>${title}</legend>`;
+    for (const f of fields) {
+      const cur = paramDisplay(getNodeParamByPath(d, f.path));
+      html += `<label class="pfield">
+        <span>${escapeHtml(f.label)}${f.required ? ' <em>*</em>' : ''}
+          <small class="muted">${escapeHtml(f.loc)}${f.type ? " · " + escapeHtml(f.type) : ""}</small></span>
+        <input type="text" data-node-df="${escapeHtml(String(dfId))}" data-to-path="${escapeHtml(f.path)}"
+          value="${escapeHtml(cur)}" placeholder="값 입력 (숫자/JSON 가능)" autocomplete="off" /></label>`;
+    }
+    html += `</fieldset>`;
+  }
+  wrap.innerHTML = html;
+}
+
+// 문자열 값을 JSON 으로 해석 시도(숫자/불리언/객체), 실패 시 원문 문자열.
+function coerceVal(raw) {
+  const t = String(raw).trim();
+  if (t === "") return undefined;
+  try { return JSON.parse(t); } catch { return raw; }
+}
+
+// 폼 입력값을 각 노드의 정적 params 에 기록(저장 시 영속, 속성 패널과 동일 데이터).
+function applyRunFormToNodes() {
+  const byDf = {};
+  document.querySelectorAll('#run-form-fields [data-to-path]').forEach(el => {
+    const dfId = el.dataset.nodeDf;
+    (byDf[dfId] = byDf[dfId] || []).push({ to: el.dataset.toPath, value: coerceVal(el.value) });
+  });
+  for (const dfId in byDf) {
+    const node = editor.getNodeFromId(dfId);
+    if (!node) continue;
+    const d = node.data;
+    for (const item of byDf[dfId]) setNodeParamByPath(d, item.to, item.value);
+    editor.updateNodeDataFromId(dfId, d);
+  }
+}
+
+// 실행 입력 수집: 폼 모드는 노드 정적 params 에 반영하고 auth 만 수집(initial_input 은 빈 객체).
+function collectRunForm() {
+  applyRunFormToNodes();
+  const token = document.getElementById("run-auth-token").value.trim();
+  const auth = {};
+  if (token) { if (runAuthType === "apikey") auth.api_key = token; else auth.token = token; }
+  runFormCache.authToken = token;
+  runFormCache.authType = runAuthType;
+  return { initialInput: {}, auth };
+}
+
+// 폼 ↔ JSON 모드 전환(값 동기화).
+async function setRunMode(mode) {
+  if (mode === "json" && runMode !== "json") {
+    // 폼값을 노드에 반영하고 JSON 텍스트 채우기
+    const { initialInput, auth } = collectRunForm();
+    document.getElementById("run-initial-input").value = JSON.stringify(initialInput, null, 2);
+    document.getElementById("run-auth").value = JSON.stringify(auth, null, 2);
+    setRunModeUI("json");
+  } else if (mode === "form" && runMode !== "form") {
+    // JSON → 폼: auth 복원 후 폼 재구성
+    try {
+      const a = JSON.parse(document.getElementById("run-auth").value || "{}");
+      if (a.api_key != null) { runFormCache.authToken = String(a.api_key); setAuthType("apikey"); }
+      else if (a.token != null) { runFormCache.authToken = String(a.token); setAuthType("bearer"); }
+    } catch { /* noop */ }
+    document.getElementById("run-auth-token").value = runFormCache.authToken || "";
+    await buildRunForm();
+    setRunModeUI("form");
+  }
 }
 
 async function runWorkflow(ev) {
@@ -375,12 +892,16 @@ async function runWorkflow(ev) {
   const errEl = document.getElementById("run-error");
   errEl.textContent = "";
   let initialInput, auth;
-  try {
-    initialInput = JSON.parse(document.getElementById("run-initial-input").value || "{}");
-    auth = JSON.parse(document.getElementById("run-auth").value || "{}");
-  } catch (e) {
-    errEl.textContent = "JSON 형식 오류: " + e.message;
-    return false;
+  if (runMode === "json") {
+    try {
+      initialInput = JSON.parse(document.getElementById("run-initial-input").value || "{}");
+      auth = JSON.parse(document.getElementById("run-auth").value || "{}");
+    } catch (e) {
+      errEl.textContent = "JSON 형식 오류: " + e.message;
+      return false;
+    }
+  } else {
+    ({ initialInput, auth } = collectRunForm());
   }
   // 저장 후 실행(최신 그래프 보장)
   await saveWorkflow();
@@ -457,6 +978,22 @@ function renderNodeParams(dfId) {
     <span class="badge">api_call</span></div>`;
   html += `<p class="hint">정적 기본값만 입력하세요. 동적 값은 엣지의 data_mapping 으로 주입됩니다(§7).</p>`;
 
+  // Base URL (노드별 오버라이드). 빈 값이면 오퍼레이션/기본값 사용.
+  const opBaseUrl = (opMeta && opMeta.base_url) ? opMeta.base_url : "";
+  const baseUrlPlaceholder = opBaseUrl || DEFAULT_BASE_URL;
+  const baseUrlVal = d.base_url || "";
+  html += `<fieldset><legend>Base URL</legend>
+    <label class="pfield">
+      <span>호출 호스트 <small class="muted">노드별 오버라이드</small></span>
+      <input type="text" data-loc="base_url"
+        value="${escapeHtml(baseUrlVal)}"
+        placeholder="${escapeHtml(baseUrlPlaceholder)}" />
+    </label>
+    <p class="hint">비워두면 ${opBaseUrl
+      ? "오퍼레이션 기본값(<code>" + escapeHtml(opBaseUrl) + "</code>)"
+      : "서버 기본값(<code>" + escapeHtml(DEFAULT_BASE_URL) + "</code>)"} 을 사용합니다.</p>
+  </fieldset>`;
+
   for (const loc of ["path", "query", "header"]) {
     const list = schema[loc] || [];
     if (!list.length) continue;
@@ -500,6 +1037,12 @@ function applyParamChange(dfId, el) {
   const node = editor.getNodeFromId(dfId);
   const d = node.data;
   const loc = el.dataset.loc;
+  if (loc === "base_url") {
+    const v = el.value.trim();
+    d.base_url = v || null;
+    editor.updateNodeDataFromId(dfId, d);
+    return;
+  }
   if (loc === "body") {
     const errEl = document.getElementById("body-err");
     const txt = el.value.trim();
@@ -860,6 +1403,8 @@ output: ${escapeHtml(jsonStr(l.output))}</pre>
   } else {
     resultWrap.hidden = true;
   }
+
+  applyNodeStatuses(result.logs);
 }
 
 /* =============================================================== 팔레트 ===== */

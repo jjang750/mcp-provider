@@ -23,16 +23,49 @@
 
   <!-- ===== 중앙: 캔버스 ===== -->
   <div class="panel panel-center">
-    <div class="toolbar">
+    <!-- 툴바 1행: 제목 + 저장상태 + 테마 + 저장/실행 -->
+    <div class="toolbar toolbar-main">
       <strong id="wf-title">워크플로우 #{{ workflow_id }}</strong>
       <span class="spacer"></span>
-      <button onclick="addStartNode()">+ start</button>
-      <button onclick="addEndNode()">+ end</button>
-      <button class="primary" onclick="saveWorkflow()">저장</button>
-      <button class="run" onclick="openRunDialog()">실행</button>
       <span id="save-status" class="muted"></span>
+      <button id="theme-toggle" class="icon-btn" onclick="toggleTheme()" title="라이트/다크 전환">🌗</button>
+      <button class="primary" onclick="saveWorkflow()">저장</button>
+      <button class="run" onclick="openRunDialog()">▶ 실행</button>
     </div>
-    <div id="drawflow" class="drawflow-canvas"></div>
+    <!-- 툴바 2행: 노드 추가 + MCP 설정 -->
+    <div class="toolbar toolbar-mcp">
+      <button class="btn-add-start small" onclick="addStartNode()">+ start</button>
+      <button class="btn-add-end small" onclick="addEndNode()">+ end</button>
+      <span class="sep"></span>
+      <input id="mcp-tool-name" type="text" onchange="applyToolName()" placeholder="도구 이름(예: xperp_charge_detail)" title="MCP 도구 이름 — 비우면 자동(workflow_id_slug)" />
+      <input id="mcp-group" type="text" onchange="applyMcpGroup()" placeholder="MCP 그룹(예: xperp)" title="MCP 서버 그룹 — 비우면 기본 서버" />
+      <span class="mcp-label">MCP</span>
+      <button id="expose-btn" class="small" onclick="toggleExpose()" title="MCP 도구로 노출/해제">노출: ?</button>
+    </div>
+    <div class="canvas-wrap">
+      <!-- 상단 중앙 플로팅 정렬 바 -->
+      <div class="canvas-toolbar">
+        <button class="ct-btn" onclick="autoLayout()" title="전체 흐름을 좌→우로 자동 정렬">⤢ 자동 정렬</button>
+        <span class="ct-sep"></span>
+        <span id="sel-count" class="ct-count" style="display:none"></span>
+        <button class="ct-ico" data-needsel onclick="alignNodes('left')" title="왼쪽 정렬">▏</button>
+        <button class="ct-ico" data-needsel onclick="alignNodes('centerx')" title="가로 가운데">│</button>
+        <button class="ct-ico" data-needsel onclick="alignNodes('right')" title="오른쪽 정렬">▕</button>
+        <button class="ct-ico" data-needsel onclick="alignNodes('top')" title="위 정렬">▔</button>
+        <button class="ct-ico" data-needsel onclick="alignNodes('centery')" title="세로 가운데">─</button>
+        <button class="ct-ico" data-needsel onclick="alignNodes('bottom')" title="아래 정렬">▁</button>
+        <span class="ct-sep"></span>
+        <button class="ct-ico" data-needsel onclick="distributeNodes('x')" title="가로 균등 분배">⇿</button>
+        <button class="ct-ico" data-needsel onclick="distributeNodes('y')" title="세로 균등 분배">⇳</button>
+      </div>
+      <div id="drawflow" class="drawflow-canvas"></div>
+      <!-- 좌하단 줌 컨트롤 -->
+      <div class="zoom-controls">
+        <button class="icon-btn" onclick="zoomIn()" title="확대">+</button>
+        <button class="icon-btn" onclick="zoomOut()" title="축소">−</button>
+        <button class="icon-btn" id="zoom-label" onclick="zoomReset()" title="100%로">100%</button>
+      </div>
+    </div>
   </div>
 
   <!-- ===== 우측: 노드 파라미터 / 엣지 매핑 / 실행 로그 ===== -->
@@ -59,17 +92,55 @@
 <!-- 실행 입력 다이얼로그 -->
 <dialog id="run-dialog">
   <form method="dialog" onsubmit="return runWorkflow(event)">
-    <h3>워크플로우 실행</h3>
-    <label>initial_input (JSON)
-      <textarea id="run-initial-input" rows="4">{}</textarea>
-    </label>
-    <label>auth (JSON, 예: {"token":"...", "api_key":"..."})
-      <textarea id="run-auth" rows="3">{}</textarea>
-    </label>
+    <div class="run-head">
+      <div class="run-title">
+        <span class="run-icon">▶</span>
+        <div>
+          <h3>워크플로우 실행</h3>
+          <div id="run-sub" class="muted"></div>
+        </div>
+      </div>
+      <button type="button" class="icon-btn ghost" onclick="closeRunDialog()">✕</button>
+    </div>
+
+    <!-- 모드 세그먼트 -->
+    <div class="segment" id="run-mode-seg">
+      <button type="button" class="seg-btn active" data-mode="form" onclick="setRunMode('form')">폼 모드</button>
+      <button type="button" class="seg-btn" data-mode="json" onclick="setRunMode('json')">JSON 직접 편집</button>
+    </div>
+
+    <!-- 폼 입력 모드 (기본) -->
+    <div id="run-form-mode">
+      <fieldset>
+        <legend>인증 (auth)</legend>
+        <div class="segment" id="run-auth-seg">
+          <button type="button" class="seg-btn active" data-auth="bearer" onclick="setAuthType('bearer')">Bearer Token</button>
+          <button type="button" class="seg-btn" data-auth="apikey" onclick="setAuthType('apikey')">API Key</button>
+        </div>
+        <input type="password" id="run-auth-token" placeholder="비워두면 미사용" autocomplete="off" />
+      </fieldset>
+      <fieldset>
+        <legend>입력 파라미터</legend>
+        <div id="run-form-fields">
+          <p class="muted">시작 노드에 연결된 API 노드가 없습니다. JSON 직접 편집으로 입력하세요.</p>
+        </div>
+      </fieldset>
+    </div>
+
+    <!-- JSON 모드 -->
+    <div id="run-json-mode" hidden>
+      <label>initial_input (JSON)
+        <textarea id="run-initial-input" rows="4">{}</textarea>
+      </label>
+      <label>auth (JSON, 예: {"token":"...", "api_key":"..."})
+        <textarea id="run-auth" rows="3">{}</textarea>
+      </label>
+    </div>
+
     <div id="run-error" class="error-msg"></div>
     <menu>
-      <button value="cancel" onclick="closeRunDialog()">취소</button>
-      <button value="run" class="primary">실행</button>
+      <button type="button" class="ghost" onclick="closeRunDialog()">취소</button>
+      <button value="run" class="primary">▶ 실행하기</button>
     </menu>
   </form>
 </dialog>

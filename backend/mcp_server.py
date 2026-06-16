@@ -24,8 +24,21 @@ TODO(backend integration):
 """
 from __future__ import annotations
 
+import copy
+import os
 import re
 from typing import Any, Callable, Optional
+
+# Optional group filter so one workflow DB can be split across multiple MCP
+# servers. Set ``MCP_GROUP=xperp`` (per connector in claude_desktop_config) and
+# this process only exposes workflows whose ``mcp_group`` matches. Empty/None
+# exposes all exposed workflows (single combined server). ``MCP_SERVER_NAME``
+# overrides the advertised server name.
+MCP_GROUP = (os.environ.get("MCP_GROUP") or "").strip() or None
+MCP_SERVER_NAME = (
+    os.environ.get("MCP_SERVER_NAME")
+    or (f"mcp-{MCP_GROUP}" if MCP_GROUP else "mcp-provider")
+)
 
 # engine import works from repo root (engine/ is a sibling of backend/).
 try:
@@ -44,8 +57,23 @@ def slugify(name: str) -> str:
     return slug or "workflow"
 
 
-def build_tool_name(workflow_id: int, name: str) -> str:
-    """``workflow_{id}_{slug}`` (§8)."""
+def sanitize_tool_name(name: str) -> str:
+    """Reduce a user-supplied tool name to MCP-safe chars ``[A-Za-z0-9_-]``."""
+    s = re.sub(r"[^A-Za-z0-9_-]+", "_", (name or "").strip())
+    s = re.sub(r"_+", "_", s).strip("_-")
+    return s
+
+
+def build_tool_name(
+    workflow_id: int, name: str, override: Optional[str] = None
+) -> str:
+    """Tool name. Uses the user-supplied ``override`` verbatim (sanitized) when
+    set, so a workflow can be named e.g. ``xperp_charge_detail`` and be obvious
+    at a glance. Falls back to ``workflow_{id}_{slug}`` (§8) otherwise."""
+    if override:
+        cleaned = sanitize_tool_name(override)
+        if cleaned:
+            return cleaned
     return f"workflow_{workflow_id}_{slugify(name)}"
 
 
@@ -154,23 +182,117 @@ def build_output_schema(
 # DB / server wiring (stub — backend supplies the data source)
 # --------------------------------------------------------------------------- #
 def load_exposed_workflows() -> list[dict]:
-    """Return ``[{"id","name","graph"}]`` for mcp_exposed workflows.
+    """Return ``[{"id","name","description","graph"}]`` for mcp_exposed workflows.
 
-    TODO(backend): wire to workflows/nodes/edges repositories.  ``graph`` must be
-    a §4 ``WorkflowGraph`` dict (``workflow_id``, ``nodes``, ``edges``).
+    Wired to the workflows repository. ``graph`` is a §4 ``WorkflowGraph`` dict
+    (``workflow_id``, ``nodes``, ``edges``) produced via ``model_dump(by_alias=True)``
+    so the ``data_mapping`` wire key ``from`` is preserved for the engine.
     """
-    return []
+    from backend.db import get_connection
+    from backend.repositories import workflows as wf_repo
+
+    conn = get_connection()
+    try:
+        out: list[dict] = []
+        for summary in wf_repo.list_workflows(conn):
+            if not summary.mcp_exposed:
+                continue
+            # When MCP_GROUP is set, only expose workflows in that group.
+            if MCP_GROUP is not None and (summary.mcp_group or None) != MCP_GROUP:
+                continue
+            graph = wf_repo.load_graph(conn, summary.id)
+            if graph is None:
+                continue
+            out.append(
+                {
+                    "id": summary.id,
+                    "name": summary.name,
+                    "description": summary.description,
+                    "tool_name": summary.mcp_tool_name,
+                    "graph": graph.model_dump(by_alias=True),
+                }
+            )
+        return out
+    finally:
+        conn.close()
 
 
 def make_operation_resolver() -> Callable[[int], Optional[dict]]:
     """Return a resolver mapping operations.id -> operation dict (§3 shape).
 
-    TODO(backend): wire to the operations repository.
+    Wired to the operations repository. A short-lived connection is opened per
+    call (operations are read-only) so the resolver is safe across threads.
     """
-    def _resolver(operation_id: int) -> Optional[dict]:  # noqa: ARG001
-        return None
+    from backend.db import get_connection
+    from backend.repositories import specs as specs_repo
+
+    def _resolver(operation_id: int) -> Optional[dict]:
+        if operation_id is None:
+            return None
+        conn = get_connection()
+        try:
+            op = specs_repo.get_operation(conn, operation_id)
+            return op.model_dump() if op is not None else None
+        finally:
+            conn.close()
 
     return _resolver
+
+
+def apply_tool_args(
+    graph: dict,
+    arguments: dict,
+    operation_resolver: Optional[Callable[[int], Optional[dict]]] = None,
+) -> dict:
+    """Inject MCP tool ``arguments`` into the target node's static params (§8).
+
+    ``build_input_schema`` advertises a tool's inputs as the unsatisfied required
+    params of the start-connected api_call node, but the engine only injects
+    ``initial_input`` through edge ``data_mapping``. So we route each argument
+    into the matching node param (path/query/header by name, or requestBody key)
+    on a *deep copy* of the graph so concurrent calls don't clobber each other.
+    """
+    g = copy.deepcopy(graph)
+    if not arguments:
+        return g
+    nodes = g.get("nodes") or []
+    edges = g.get("edges") or []
+    start = next((n for n in nodes if n.get("type") == "start"), None)
+    nodes_by_key = {n.get("id"): n for n in nodes}
+
+    targets: list[dict] = []
+    if start is not None:
+        for e in edges:
+            if e.get("source") == start.get("id"):
+                t = nodes_by_key.get(e.get("target"))
+                if t and t.get("type") == "api_call":
+                    targets.append(t)
+    if not targets:
+        targets = [n for n in nodes if n.get("type") == "api_call"]
+
+    for node in targets:
+        op_id = node.get("operation_id")
+        op = operation_resolver(op_id) if (operation_resolver and op_id is not None) else None
+        if not op:
+            continue
+        params_schema = op.get("params_schema") or {}
+        params = node.setdefault("params", {})
+        for bucket in ("path", "query", "header"):
+            for p in params_schema.get(bucket, []):
+                name = p.get("name")
+                if name and name in arguments:
+                    params.setdefault(bucket, {})[name] = arguments[name]
+        rs = op.get("request_schema")
+        if rs:
+            props = (rs.get("schema") or {}).get("properties") or {}
+            for key in props:
+                if key in arguments:
+                    body = params.get("body")
+                    if not isinstance(body, dict):
+                        body = {}
+                        params["body"] = body
+                    body[key] = arguments[key]
+    return g
 
 
 def build_tools() -> list[dict]:
@@ -181,7 +303,9 @@ def build_tools() -> list[dict]:
         graph = wf.get("graph") or {}
         tools.append(
             {
-                "name": build_tool_name(wf["id"], wf.get("name", "")),
+                "name": build_tool_name(
+                    wf["id"], wf.get("name", ""), wf.get("tool_name")
+                ),
                 "description": wf.get("description") or wf.get("name", ""),
                 "inputSchema": build_input_schema(graph, resolver),
                 "outputSchema": build_output_schema(graph, resolver),
@@ -212,7 +336,7 @@ def main() -> None:  # pragma: no cover - requires mcp SDK + DB
     if run_workflow is None:
         raise SystemExit("engine.run_workflow unavailable; cannot start MCP server")
 
-    server = Server("mcp-provider")
+    server = Server(MCP_SERVER_NAME)
     resolver = make_operation_resolver()
     tool_index = {t["name"]: t for t in build_tools()}
 
@@ -232,8 +356,12 @@ def main() -> None:  # pragma: no cover - requires mcp SDK + DB
         tool = tool_index.get(name)
         if not tool:
             return [types.TextContent(type="text", text=f"unknown tool: {name}")]
+        # Route tool args into the target node params (engine injects initial_input
+        # only via edge mappings), then also pass them as initial_input so any
+        # mapping-based flows still work.
+        graph = apply_tool_args(tool["_graph"], arguments or {}, resolver)
         result = await run_workflow(  # type: ignore[misc]
-            tool["_graph"],
+            graph,
             initial_input=arguments,
             auth={},  # TODO: server-side auth configuration
             operation_resolver=resolver,

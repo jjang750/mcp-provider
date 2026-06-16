@@ -55,7 +55,9 @@ CREATE TABLE IF NOT EXISTS workflows (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     name         TEXT    NOT NULL,
     description  TEXT,
-    mcp_exposed  INTEGER NOT NULL DEFAULT 0,
+    mcp_exposed   INTEGER NOT NULL DEFAULT 0,
+    mcp_group     TEXT,
+    mcp_tool_name TEXT,
     created_at   TEXT    NOT NULL,
     updated_at   TEXT    NOT NULL
 );
@@ -67,6 +69,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     operation_id  INTEGER REFERENCES operations(id) ON DELETE SET NULL,
     type          TEXT    NOT NULL,
     label         TEXT    NOT NULL DEFAULT '',
+    base_url      TEXT,
     params        TEXT    NOT NULL DEFAULT '{}',
     position_x    REAL    NOT NULL DEFAULT 0,
     position_y    REAL    NOT NULL DEFAULT 0
@@ -109,6 +112,23 @@ CREATE INDEX IF NOT EXISTS idx_logs_execution ON execution_logs(execution_id);
 """
 
 
+# Additive, idempotent column migrations for tables that already exist in an
+# older DB file (CREATE TABLE IF NOT EXISTS never alters an existing table).
+# Each entry: (table, column, column_def).
+_COLUMN_MIGRATIONS = [
+    ("nodes", "base_url", "TEXT"),
+    ("workflows", "mcp_group", "TEXT"),
+    ("workflows", "mcp_tool_name", "TEXT"),
+]
+
+
+def _apply_column_migrations(conn: sqlite3.Connection) -> None:
+    for table, column, col_def in _COLUMN_MIGRATIONS:
+        cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
+
+
 def get_connection() -> sqlite3.Connection:
     """Open a new SQLite connection with sane defaults for FastAPI.
 
@@ -124,10 +144,15 @@ def get_connection() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    """Create all tables/indexes if they do not exist (idempotent)."""
+    """Create all tables/indexes if they do not exist (idempotent).
+
+    Also applies additive column migrations so existing ``mcp_provider.db``
+    files gain new columns (e.g. ``nodes.base_url``) without a manual reset.
+    """
     conn = get_connection()
     try:
         conn.executescript(SCHEMA_DDL)
+        _apply_column_migrations(conn)
         conn.commit()
     finally:
         conn.close()
