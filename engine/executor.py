@@ -24,10 +24,15 @@ operation cannot be resolved fail gracefully.
 from __future__ import annotations
 
 import inspect
+import os
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional, Union
 
 from . import http_client
+
+# Fallback base URL used when neither the node nor its operation defines one.
+# Override via the ``MCP_DEFAULT_BASE_URL`` environment variable.
+DEFAULT_BASE_URL = os.environ.get("MCP_DEFAULT_BASE_URL", "http://localhost:8000")
 
 # A graph may arrive as a Pydantic model or a dict with identical keys (§6).
 GraphLike = Union[dict, Any]
@@ -321,10 +326,18 @@ async def _execute_api_call(
     if isinstance(request_schema, dict):
         content_type = request_schema.get("content_type", "application/json")
 
+    # base_url precedence: node override -> operation -> engine default (§ base_url).
+    # ``or`` collapses empty strings/None to the next candidate.
+    effective_base_url = (
+        (node.get("base_url") or "").strip()
+        or (op.get("base_url") or "").strip()
+        or DEFAULT_BASE_URL
+    )
+
     try:
         result = await http_client.call(
             method=op.get("method", "GET"),
-            base_url=op.get("base_url"),
+            base_url=effective_base_url,
             path=op.get("path", ""),
             path_params=params.get("path") or {},
             query=params.get("query") or {},

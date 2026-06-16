@@ -124,6 +124,15 @@ async def call(
 
     url = build_url(base_url, path, path_params or {})
 
+    # Fail fast with a clear, actionable message instead of httpx's terse
+    # "Request URL is missing an 'http://' or 'https://' protocol." This happens
+    # when no base_url is configured for the node/operation.
+    if not re.match(r"^https?://", url):
+        raise HttpCallError(
+            f"base_url 미설정: 요청 URL '{url}' 에 http(s):// 프로토콜이 없습니다. "
+            f"노드 속성의 Base URL 또는 오퍼레이션 base_url 을 설정하세요."
+        )
+
     request_kwargs: dict[str, Any] = {"params": q, "headers": h}
     if body is not None:
         if body_content_type == "application/json":
